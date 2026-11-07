@@ -1,4 +1,4 @@
 # SmartSplint Monitor (computer application) - Python 3.9 or newer.
 # The application itself uses only the Python standard library.
 # bleak is needed for the Bluetooth (BLE) link to the splint, which is the default link.
-bleak>=2.1.1
+bleak>=2.1.1,<3
