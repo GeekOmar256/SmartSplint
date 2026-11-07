@@ -1,0 +1,21 @@
+# Only the code and its documentation are tracked. Reports, images and notes stay on this computer.
+/*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/requirements-docs.txt
+!/SETUP_COMMANDS.txt
+!/SmartSplint_Monitor/
+!/firmware/
+!/docs/
+
+# app data (database, settings, calibration) is created on each computer
+SmartSplint_Monitor/data/
+__pycache__/
+*.pyc
+
+# not code
+firmware/_reference/
+*.zip
+*.bak
+*.log

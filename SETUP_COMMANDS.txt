@@ -1,0 +1,119 @@
+==========================================================================================
+ Smart Orthopedic Splint - تثبيت البرنامج على كمبيوتر جديد (Windows 10 / 11)
+==========================================================================================
+ نفّذ الأوامر بالترتيب في PowerShell.
+ (افتح قائمة Start، اكتب PowerShell، ثم اضغط Enter)
+ انسخ كل أمر كما هو، ثم اضغط Enter بعده.
+
+
+------------------------------------------------------------------------------------------
+ الخطوة 1: تثبيت Python 3.12 (مع إضافته إلى الـ PATH)
+------------------------------------------------------------------------------------------
+winget install --id Python.Python.3.12 -e --override "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1"
+
+
+------------------------------------------------------------------------------------------
+ الخطوة 2: تثبيت Git
+------------------------------------------------------------------------------------------
+winget install --id Git.Git -e
+
+
+------------------------------------------------------------------------------------------
+ الخطوة 3: تثبيت GitHub CLI (لتنزيل الكود من GitHub)
+------------------------------------------------------------------------------------------
+winget install --id GitHub.cli -e
+
+
+------------------------------------------------------------------------------------------
+ الخطوة 4: أغلق نافذة PowerShell وافتح نافذة جديدة
+------------------------------------------------------------------------------------------
+ هذا ضروري حتى تتعرف النافذة الجديدة على python وgit وgh.
+ للتأكد من التثبيت، كل أمر من الأوامر التالية يجب أن يطبع رقم إصدار:
+
+python --version
+git --version
+gh --version
+
+
+------------------------------------------------------------------------------------------
+ الخطوة 5: تسجيل الدخول إلى GitHub (مرة واحدة فقط)
+------------------------------------------------------------------------------------------
+ المستودع خاص (private)، لذلك يجب تسجيل الدخول بحساب له صلاحية الوصول إليه.
+ اختر: GitHub.com، ثم HTTPS، ثم Login with a web browser، وأكمل الدخول في المتصفح.
+
+gh auth login
+
+
+------------------------------------------------------------------------------------------
+ الخطوة 6: تنزيل الكود من GitHub
+------------------------------------------------------------------------------------------
+cd $HOME\Documents
+gh repo clone GeekOmar256/SmartSplint
+cd SmartSplint
+
+
+------------------------------------------------------------------------------------------
+ الخطوة 7: تثبيت المكتبات
+------------------------------------------------------------------------------------------
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+ (اختياري) لإعادة رسم المخططات (flowcharts) ومخطط التوصيل:
+python -m pip install -r requirements-docs.txt
+
+
+------------------------------------------------------------------------------------------
+ الخطوة 8: تشغيل التطبيق
+------------------------------------------------------------------------------------------
+ للتجربة بدون الجبيرة (بيانات محاكاة):
+cd SmartSplint_Monitor
+python server.py --simulate --demo-days 3
+
+ مع الجبيرة الحقيقية (Bluetooth هو الاتصال الافتراضي):
+python server.py
+
+ تفتح الـ dashboard تلقائيًا على http://localhost:8000
+ لإيقاف التطبيق اضغط Ctrl + C.
+ يمكن أيضًا التشغيل بالضغط مرتين على run.bat أو run_simulation.bat داخل المجلد SmartSplint_Monitor.
+ ملاحظة: شغّل Bluetooth في الكمبيوتر من Settings ثم Bluetooth & devices.
+
+
+------------------------------------------------------------------------------------------
+ الخطوة 9 (لرفع الكود على الـ ESP32): تثبيت Arduino IDE
+------------------------------------------------------------------------------------------
+winget install --id ArduinoSA.IDE.stable -e
+
+ ثم داخل Arduino IDE:
+   1) File > Preferences > Additional boards manager URLs، والصق هذا الرابط:
+      https://espressif.github.io/arduino-esp32/package_esp32_index.json
+   2) Tools > Board > Boards Manager: ابحث عن esp32 (by Espressif) وثبّت الإصدار 2.0.17
+   3) Tools > Manage Libraries: ثبّت OneWire ثم DallasTemperature
+   4) افتح الملف firmware\SmartSplint_Monitor_FW\SmartSplint_Monitor_FW.ino
+   5) الإعدادات:
+        Board            : ESP32C3 Dev Module
+        USB CDC On Boot  : Enabled
+        Partition Scheme : Huge APP (3MB No OTA)
+   6) اختر الـ Port، ثم اضغط Upload
+
+
+------------------------------------------------------------------------------------------
+ (بديل للخطوة 9) رفع الكود باستخدام سطر الأوامر arduino-cli
+------------------------------------------------------------------------------------------
+winget install --id ArduinoSA.CLI -e
+ (أغلق PowerShell وافتح نافذة جديدة، ثم ادخل مجلد SmartSplint مرة أخرى)
+arduino-cli config init
+arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+arduino-cli core update-index
+arduino-cli core install esp32:esp32@2.0.17
+arduino-cli lib install OneWire DallasTemperature
+arduino-cli board list
+ (اكتب رقم الـ Port الظاهر، مثل COM5، بدل COM5 في الأمر التالي)
+arduino-cli compile --upload -p COM5 --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app" firmware\SmartSplint_Monitor_FW
+
+
+------------------------------------------------------------------------------------------
+ تحديث الكود لاحقًا (بعد أي تعديل جديد على GitHub)
+------------------------------------------------------------------------------------------
+cd $HOME\Documents\SmartSplint
+git pull
+python -m pip install -r requirements.txt
