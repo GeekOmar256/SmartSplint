@@ -55,6 +55,7 @@ uint8_t imuWho[2] = {0, 0};
 uint8_t imuFailures[2] = {0, 0};
 uint32_t imuReadErrors[2] = {0, 0};
 uint32_t lastImuRetry = 0;
+uint32_t lastImuPrint = 0;
 
 OneWire oneWire(TEMP_PIN);
 DallasTemperature thermometer(&oneWire);
@@ -118,7 +119,7 @@ bool initIMU(uint8_t i, bool verbose) {
   delay(100);
   ok = writeByte(address, 0x6C, 0x00) && ok;  // all axes on
   ok = writeByte(address, 0x1A, 0x03) && ok;  // sensor's own low-pass filter ~44 Hz (anti-aliasing)
-  ok = writeByte(address, 0x19, 4) && ok;     // 200 Hz internal rate
+  ok = writeByte(address, 0x19, 19) && ok;    // 50 Hz, same as working reference
   ok = writeByte(address, 0x1B, 0x00) && ok;  // +/-250 deg/s -> 131 LSB per deg/s
   ok = writeByte(address, 0x1C, 0x00) && ok;  // +/-2 g      -> 16384 LSB per g
   if (newer) ok = writeByte(address, 0x1D, 0x03) && ok;
@@ -126,6 +127,8 @@ bool initIMU(uint8_t i, bool verbose) {
   ok = readBytes(address, 0x6B, &power, 1) && ok;
   ok = readBytes(address, 0x1B, &gyroConfig, 1) && ok;
   ok = readBytes(address, 0x1C, &accelConfig, 1) && ok;
+  if (verbose) Serial.printf("Read-back 0x%02X: PWR=0x%02X GYRO=0x%02X ACCEL=0x%02X\n",
+                            address, power, gyroConfig, accelConfig);
   ok = ok && power == 0x01 && gyroConfig == 0x00 && accelConfig == 0x00;
   imuReady[i] = ok;
   if (verbose) Serial.printf("0x%02X: %s\n", address, ok ? "READY" : "CONFIGURATION FAILED");
@@ -189,6 +192,24 @@ void initializeAll() {
   scanBus();
   for (uint8_t i = 0; i < 2; ++i) initIMU(i, true);
   initializeTemperature();
+}
+
+// Show the same units as the working Wi-Fi reference, without changing the
+// raw counts sent to the app (which performs the unit conversion once).
+void printImuDiagnostics() {
+  if (nextSeq <= 1) return;
+  const Sample &s = buffer[(nextSeq - 1) % BUFFER_SIZE];
+  for (uint8_t i = 0; i < 2; ++i) {
+    if (!(s.flags & (1 << i))) {
+      Serial.printf("0x%02X | NO VALID SAMPLE | ready=%d WHO=0x%02X read errors=%lu\n",
+                    ADDRESSES[i], imuReady[i], imuWho[i], (unsigned long)imuReadErrors[i]);
+      continue;
+    }
+    Serial.printf("0x%02X | A(g): X=%+.3f Y=%+.3f Z=%+.3f | G(deg/s): X=%+.2f Y=%+.2f Z=%+.2f\n",
+                  ADDRESSES[i], s.imu[i][0] / 16384.0f, s.imu[i][1] / 16384.0f,
+                  s.imu[i][2] / 16384.0f, s.imu[i][3] / 131.0f,
+                  s.imu[i][4] / 131.0f, s.imu[i][5] / 131.0f);
+  }
 }
 
 // ================================================================== BLE
@@ -271,13 +292,15 @@ void setup() {
   Serial.begin(115200);
   uint32_t started = millis();
   while (!Serial && millis() - started < 2000) delay(10);
-  Serial.println("\n=== SmartSplint Monitor BLE ONLY 1.0 (raw data) ===");
+  delay(500);
+  Serial.println("\n=== SmartSplint Monitor BLE ONLY 1.1 (reference IMU settings) ===");
   if (!Wire.begin(SDA_PIN, SCL_PIN)) {
     Serial.println("I2C initialization FAILED");
     while (true) delay(1000);
   }
   Wire.setClock(100000);
   Wire.setTimeOut(50);
+  delay(200);  // same sensor startup settling time as the working reference
   analogReadResolution(12);
   for (uint8_t i = 0; i < 2; ++i) analogSetPinAttenuation(FSR_PINS[i], ADC_11db);
   initializeAll();
@@ -310,6 +333,15 @@ void loop() {
     Serial.printf("seq %lu | IMU ready %d %d | FSR raw %u %u | T %s C\n", (unsigned long)(nextSeq - 1),
                   imuReady[0], imuReady[1], s.fsr[0], s.fsr[1],
                   temperatureValid ? String(temperatureC, 2).c_str() : "--");
+    uint16_t mtu = bleConnected ? bleServer->getPeerMTU(bleConnId) : 0;
+    Serial.printf("BLE connected=%d MTU=%u last sent seq=%lu latest seq=%lu\n",
+                  bleConnected, mtu, (unsigned long)bleSentSeq, (unsigned long)(nextSeq - 1));
+    if (bleConnected && mtu < 46)
+      Serial.println("BLE MTU too small for one sample; sensor data may be valid but cannot reach the app.");
+  }
+  if (now - lastImuPrint >= 500) {
+    lastImuPrint = now;
+    printImuDiagnostics();
   }
   if (temperatureFound && now - conversionStarted >= TEMP_MS) {
     temperatureC = thermometer.getTempC(temperatureAddress);
