@@ -13,6 +13,10 @@ storage, analysis and a web dashboard.
 
 **Installing on a new computer:** follow `SETUP_COMMANDS.txt` step by step.
 
+## Bluetooth only firmware
+
+Use `firmware/SmartSplint_Monitor_BLEOnly/SmartSplint_Monitor_BLEOnly.ino` for a dedicated Bluetooth build without Wi-Fi or a device web server. It keeps the same sensor pins and BLE data format as the computer app. The checked build uses 75% of the default application partition with ESP32 core 2.0.17; Huge APP is not required for this variant. Enable USB CDC On Boot. See the firmware folder's README for connection and upload instructions.
+
 Quick start, once Python is installed:
 
 ```
