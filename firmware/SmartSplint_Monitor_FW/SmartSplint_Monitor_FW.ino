@@ -364,8 +364,10 @@ void startWeb() {
 
 // ================================================================== BLE
 class ServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer *server, esp_ble_gatts_cb_param_t *param) override {
-    bleConnId = param->connect.conn_id;
+  // Use the shared callback API: the two-argument form depends on the BLE
+  // backend (Bluedroid vs NimBLE) selected by the installed ESP32 core.
+  void onConnect(BLEServer *server) override {
+    bleConnId = server->getConnId();
     bleConnected = true;
     bleJustConnected = true;
   }

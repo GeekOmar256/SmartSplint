@@ -186,14 +186,10 @@ def esp32_setup():
         ("act", "Start Serial (115200)\nStart I2C on GPIO8/GPIO9 at 100 kHz\nSet FSR ADC on GPIO0/GPIO1 (12-bit)"),
         ("act", "Scan the I2C bus\nConfigure IMUs at 0x68 and 0x69\n(±2 g, ±250 °/s)"),
         ("act", "Find the DS18B20 on GPIO3\nStart the first conversion"),
-        ("act", "Read the saved link mode\n(default: Bluetooth only)"),
-        ("dec", "Wi-Fi\nenabled?"),
-        ("dec", "Bluetooth\nenabled?"),
+        ("act", "Start the BLE server\nAdvertise as SmartSplint"),
         ("term", "Go to the main loop"),
     ])
-    c.chain(s, {5: "No", 6: "No"})
-    side_branches(c, s, [(5, "act", "Connect to Wi-Fi 'project'\nRegister /api/samples\nand /api/status", True),
-                         (6, "act", "Start the BLE server\n'SmartSplint' and\nstart advertising", True)], 4.7, sx)
+    c.chain(s)
     c.draw("1a_esp32_setup")
 
 
@@ -203,24 +199,22 @@ def esp32_main_loop():
     lx = 1.55
     L = c.stack(lx, 0.2, [
         ("term", "Loop start"),
+        ("dec", "BLE connected\nand samples\nready to send?"),
+        ("dec", "Serial\ncommand r / s?"),
         ("dec", "20 ms since\nlast sample?"),
-        ("dec", "1 s since last\ntemperature?"),
-        ("dec", "Wi-Fi\nmode?"),
-        ("dec", "Bluetooth\nconnected and\nnew samples?"),
-        ("dec", "Command\nw / b / a?"),
-        ("dec", "Command\nr / s?"),
-        ("dec", "IMU stopped\nand 5 s passed?"),
+        ("dec", "5 s since last\nstatus check?"),
+        ("dec", "500 ms since\nlast IMU print?"),
+        ("dec", "Probe found and\nconversion due?"),
         ("term", "Back to loop start"),
     ])
-    c.chain(L, {i: "No" for i in range(1, 8)})
+    c.chain(L, {i: "No" for i in range(1, 7)})
     side_branches(c, L, [
-        (1, "act", "Read raw accel + gyro of both IMUs\nRead raw FSR1 and FSR2\nStore sample in ring buffer (512)", True),
-        (2, "act", "Read the DS18B20 (°C)\nStart the next conversion", True),
-        (3, "act", "Keep Wi-Fi connected (retry 10 s)\nSend samples newer than the\nrequested number as JSON", True),
-        (4, "act", "Pack up to 5 samples into one\nbinary packet and notify", True),
-        (5, "warn", "Save the new link mode\nand restart the board", False),
-        (6, "act", "Reinitialize the sensors\nor scan the I2C bus", True),
-        (7, "act", "Retry the IMU setup\nPrint a status line", True),
+        (1, "act", "Pack up to 5 samples per packet\nSend a BLE notification", True),
+        (2, "act", "Reinitialize sensors or scan I2C", True),
+        (3, "act", "Read both IMUs and both FSRs\nStore sample in ring buffer (512)", True),
+        (4, "act", "Retry any stopped IMU\nPrint sensor and BLE status", True),
+        (5, "act", "Print raw IMU diagnostics", True),
+        (6, "act", "Read DS18B20 (°C)\nStart the next conversion", True),
     ], 4.85, lx)
     c.draw("1b_esp32_main_loop")
 
@@ -231,37 +225,35 @@ def app_startup_dashboard():
     mx = 3.75
     top = c.stack(mx, 0.2, [
         ("term", "Run server.py (run.bat)"),
-        ("act", "Read the options\n(--simulate, --host, --port)"),
         ("act", "Open the SQLite database\nLoad settings.json and calibration.json"),
-        ("dec", "Simulation with an\nempty database?"),
         ("act", "Start the data-link thread"),
-        ("act", "Start the web server on localhost:8000\nand open the browser"),
+        ("act", "Start the web server on localhost:8000\nand open Measurements"),
     ])
-    c.chain(top, {3: "No"})
-    demo = c.add("act", "Create 3 days\nof demo history", 7.05, top[3].y)
-    c.branch(top[3], demo)
-    c.rejoin(demo, top[4], mx)
-    thread = c.add("term", "Data-link thread\nruns in parallel", 7.05, top[4].y)
-    c.path([top[4].right, thread.left])
+    c.chain(top)
+    thread = c.add("term", "Data-link thread\nruns in parallel", 7.05, top[2].y)
+    c.path([top[2].right, thread.left])
 
     py = top[-1].y + top[-1].h / 2 + 0.55
     cy = py + 0.3
     x1, x2, x3 = 1.0, 3.75, 6.3
     col1 = c.stack(x1, cy, [("act", "Every 1 s:\nread\n/api/state"),
-                            ("out", "Live cards,\nconnection\nand\ncalibration\nstatus")])
+                            ("out", "Measurements,\nraw readings if\nuncalibrated and\nconnection status")])
     col2 = c.stack(x2, cy, [("act", "Every 10 s: read\n/api/history and\n/api/analysis"),
                             ("act", "Read the rows of\nthe selected period"),
                             ("act", "Analysis:\npressure and temperature\nvs baseline\nmovement events and\ncompliance\nloose-splint check\nmovement–pressure link\ndata quality"),
-                            ("out", "Alerts, charts and\nanalysis cards")])
-    col3 = c.stack(x3, cy, [("act", "User presses a\nCalibrate button"),
-                            ("act", "Capture 3–4 s\nof data and\ncheck it"),
+                            ("out", "Alerts, status and\ncompliance on\nMeasurements")])
+    col3 = c.stack(x3, cy, [("act", "Gear icon > Settings\nSelect Calibration"),
+                            ("dec", "Password\naccepted?"),
+                            ("act", "Open Calibration\nCapture and check data"),
                             ("dec", "Valid?"),
-                            ("out", "Save to\ncalibration.json\n(used in every\nlater session)")])
+                            ("out", "Save calibration\nfor later sessions")])
     c.chain(col1)
     c.chain(col2)
-    c.chain(col3, {2: "Yes"})
-    bad = c.add("warn", "Show the\nreason (e.g.\nmovement\ndetected)", 7.9, col3[2].y)
-    c.branch(col3[2], bad, "No")
+    c.chain(col3, {1: "Yes", 3: "Yes"})
+    bad_password = c.add("warn", "Keep page\nlocked", 8.1, col3[1].y)
+    c.branch(col3[1], bad_password, "No")
+    bad = c.add("warn", "Show why\ncapture failed", 8.1, col3[3].y)
+    c.branch(col3[3], bad, "No")
     web = top[-1]
     yb = py - 0.25
     c.path([web.bottom, (web.x, yb)], arrow=False)
@@ -269,7 +261,7 @@ def app_startup_dashboard():
     for n in (col1[0], col2[0], col3[0]):
         c.path([(n.x, yb), n.top])
     bottom = max(col2[-1].y + col2[-1].h / 2, col3[-1].y + col3[-1].h / 2) + 0.5
-    c.panel(0.15, py, 8.75, bottom, "Dashboard in the browser")
+    c.panel(0.15, py, 9.0, bottom, "Dashboard in the browser")
     c.draw("2a_app_startup_dashboard")
 
 
@@ -277,27 +269,11 @@ def app_startup_dashboard():
 def app_data_link():
     c = Chart()
     lx = 3.75
-    start = c.stack(lx, 0.2, [("term", "Data-link thread\n(repeats every 0.5 s)"), ("dec", "Link type?")])
+    start = c.stack(lx, 0.2, [("term", "Data-link thread\n(repeats every 0.5 s)"),
+                              ("act", "Find 'SmartSplint',\nconnect, receive and\ndecode BLE packets"),
+                              ("dec", "Data\nreceived?")])
     c.chain(start)
-    link = start[1]
-    bx = [1.25, 3.75, 6.15]
-    srcs = [c.add("act", t, x, link.y + link.h / 2 + 1.0) for t, x in zip(
-        ["Find 'SmartSplint',\nconnect, receive and\ndecode BLE packets",
-         "Request\n/api/samples\n?after=last sample",
-         "Generate raw\nsamples"], bx)]
-    ybus = link.y + link.h / 2 + 0.3
-    c.path([link.bottom, (lx, ybus)], arrow=False)
-    c.path([(bx[0], ybus), (bx[2], ybus)], arrow=False)
-    for n, lab in zip(srcs, ["Bluetooth (default)", "Wi-Fi", "Simulation"]):
-        c.path([(n.x, ybus), n.top])
-        c.paths[-1]["label"] = lab
-        c.paths[-1]["side"] = "right"
-    got = c.add("dec", "Data\nreceived?", lx, max(n.y + n.h / 2 for n in srcs) + 1.0)
-    ymerge = got.top[1] - 0.3
-    for n in srcs:
-        c.path([n.bottom, (n.x, ymerge)], arrow=False)
-    c.path([(bx[0], ymerge), (bx[2], ymerge)], arrow=False)
-    c.path([(lx, ymerge), got.top])
+    got = start[-1]
     rest = c.stack(lx, got.y + got.h / 2 + GAP, [
         ("act", "Process each raw sample\n(see the processing flowchart)"),
         ("act", "Store one row per second\nin the database"),

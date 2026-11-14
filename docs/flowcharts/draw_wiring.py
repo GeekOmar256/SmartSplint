@@ -89,29 +89,23 @@ def resistor_v(x, y_top, y_bot, label, color=WIRE, box_h=0.42):
 
 # ------------------------------------------------------------------ title
 text(0.3, 0.32, "Smart Orthopedic Splint – Wiring Diagram", size=14, ha="left", weight="bold", color="#1f2937")
-text(0.3, 0.62, "ESP32-C3 SuperMini · 2 × MPU6050 · 2 × FSR 400 · DS18B20 · 2 × 18650 + Type-C charge/boost module",
+text(0.3, 0.62, "ESP32-C3 SuperMini · 2 × MPU6050 · 2 × FSR 400 · DS18B20 · 1 × 18650 + Type-C charge/boost module",
      size=9, ha="left", color="#475569")
 
 # ------------------------------------------------------------------ power supply
 section(0.25, 0.9, 8.95, 3.05, "Power supply")
-# two cells in parallel
+# one 18650 cell
 bx, by = 0.6, 1.4
-for i in range(2):
-    ax.add_patch(FancyBboxPatch((bx, by + 0.55 * i), 1.6, 0.4, boxstyle="round,pad=0,rounding_size=0.18",
-                                fc="#fef3c7", ec="#b45309", lw=1.5, zorder=2))
-    text(bx + 0.8, by + 0.2 + 0.55 * i, f"18650 cell {i + 1}", size=8.8, weight="bold")
-    text(bx + 0.12, by + 0.2 + 0.55 * i, "−", size=11, weight="bold")
-    text(bx + 1.48, by + 0.2 + 0.55 * i, "+", size=11, weight="bold")
-text(bx + 0.8, by + 1.22, "3.7 V, connected in parallel", size=8.5, color="#475569")
-xp, xn = bx + 1.95, bx - 0.15                       # + and − rails of the pack
-for i in range(2):
-    yc = by + 0.2 + 0.55 * i
-    wire([(bx + 1.6, yc), (xp, yc)], NET["BAT+"][0])
-    wire([(xn, yc), (bx, yc)], NET["BAT−"][0])
-wire([(xp, by + 0.2), (xp, by + 0.75)], NET["BAT+"][0])
-wire([(xn, by + 0.2), (xn, by + 0.75)], NET["BAT−"][0])
-dot(xp, by + 0.2, NET["BAT+"][0]); dot(xp, by + 0.75, NET["BAT+"][0])
-dot(xn, by + 0.2, NET["BAT−"][0]); dot(xn, by + 0.75, NET["BAT−"][0])
+yc = by + 0.475                                     # centre line of the cell
+ax.add_patch(FancyBboxPatch((bx, yc - 0.2), 1.6, 0.4, boxstyle="round,pad=0,rounding_size=0.18",
+                            fc="#fef3c7", ec="#b45309", lw=1.5, zorder=2))
+text(bx + 0.8, yc, "18650 cell", size=8.8, weight="bold")
+text(bx + 0.12, yc, "−", size=11, weight="bold")
+text(bx + 1.48, yc, "+", size=11, weight="bold")
+text(bx + 0.8, by + 1.22, "3.7 V, single Li-ion cell", size=8.5, color="#475569")
+xp, xn = bx + 1.95, bx - 0.15                       # + and − leads of the cell
+wire([(bx + 1.6, yc), (xp, yc)], NET["BAT+"][0])
+wire([(xn, yc), (bx, yc)], NET["BAT−"][0])
 
 # charge / boost module
 mx, my, mw = 3.55, 1.25, 2.2
@@ -127,9 +121,8 @@ for name, y, net in pins_l:
 for name, y, net in pins_r:
     text(mx + mw - 0.1, y, name, size=8.8, ha="right", weight="bold")
 # battery rails to module
-wire([(xp, by + 0.475), (xp + 0.35, by + 0.475), (xp + 0.35, my + 0.85), (mx, my + 0.85)], NET["BAT+"][0])
-dot(xp, by + 0.475, NET["BAT+"][0])
-wire([(xn, by + 0.75), (xn, by + 1.55), (xp + 0.55, by + 1.55), (xp + 0.55, my + 1.25), (mx, my + 1.25)],
+wire([(xp, yc), (xp + 0.35, yc), (xp + 0.35, my + 0.85), (mx, my + 0.85)], NET["BAT+"][0])
+wire([(xn, yc), (xn, by + 1.55), (xp + 0.55, by + 1.55), (xp + 0.55, my + 1.25), (mx, my + 1.25)],
      NET["BAT−"][0])
 # module outputs -> net labels
 for name, y, net in pins_r:

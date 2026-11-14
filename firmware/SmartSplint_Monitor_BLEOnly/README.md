@@ -22,7 +22,7 @@ Separate BLE-only firmware for the ESP32-C3. Wi-Fi, HTTP, mDNS, credentials and 
 
 ## Computer application
 
-Enable Bluetooth on the computer and start the existing SmartSplint Monitor application using `python server.py` from its folder (not simulation mode). Select Bluetooth in the application's connection settings if another transport was previously saved. Device name: **SmartSplint**. The service UUID, notification characteristic UUID, 6-byte header and 37-byte sample format are unchanged from SmartSplint_Monitor_FW. No changes to the computer application's BLE decoder are required by this variant.
+Enable Bluetooth on the computer and start the existing SmartSplint Monitor application using `python server.py` from its folder (not simulation mode). Device name: **SmartSplint**. The service UUID, notification characteristic UUID, 6-byte header and 37-byte sample format are unchanged from SmartSplint_Monitor_FW. No changes to the computer application's BLE decoder are required by this variant.
 
 The ESP32 sends raw IMU/FSR readings on a nominal 50 Hz acquisition schedule and temperature about once per second. The computer app performs calibration and analysis and hosts the dashboard at **http://localhost:8000**. This firmware has no ESP32-hosted web page or IP address. A Bluetooth connection and adequate negotiated ATT MTU are required for sample notifications, as in the combined firmware.
 

@@ -19,41 +19,27 @@ winget install --id Git.Git -e
 
 
 ------------------------------------------------------------------------------------------
- الخطوة 3: تثبيت GitHub CLI (لتنزيل الكود من GitHub)
+ الخطوة 3: أغلق نافذة PowerShell وافتح نافذة جديدة
 ------------------------------------------------------------------------------------------
-winget install --id GitHub.cli -e
-
-
-------------------------------------------------------------------------------------------
- الخطوة 4: أغلق نافذة PowerShell وافتح نافذة جديدة
-------------------------------------------------------------------------------------------
- هذا ضروري حتى تتعرف النافذة الجديدة على python وgit وgh.
- للتأكد من التثبيت، كل أمر من الأوامر التالية يجب أن يطبع رقم إصدار:
+ هذا ضروري حتى تتعرف النافذة الجديدة على python وgit.
+ للتأكد من التثبيت، كل أمر من الأمرين التاليين يجب أن يطبع رقم إصدار:
 
 python --version
 git --version
-gh --version
 
 
 ------------------------------------------------------------------------------------------
- الخطوة 5: تسجيل الدخول إلى GitHub (مرة واحدة فقط)
+ الخطوة 4: تنزيل الكود من GitHub
 ------------------------------------------------------------------------------------------
- المستودع خاص (private)، لذلك يجب تسجيل الدخول بحساب له صلاحية الوصول إليه.
- اختر: GitHub.com، ثم HTTPS، ثم Login with a web browser، وأكمل الدخول في المتصفح.
+ المستودع عام (public)، لذلك لا يحتاج تسجيل دخول.
 
-gh auth login
-
-
-------------------------------------------------------------------------------------------
- الخطوة 6: تنزيل الكود من GitHub
-------------------------------------------------------------------------------------------
 cd $HOME\Documents
-gh repo clone GeekOmar256/SmartSplint
+git clone https://github.com/GeekOmar256/SmartSplint.git
 cd SmartSplint
 
 
 ------------------------------------------------------------------------------------------
- الخطوة 7: تثبيت المكتبات
+ الخطوة 5: تثبيت المكتبات
 ------------------------------------------------------------------------------------------
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
@@ -63,7 +49,7 @@ python -m pip install -r requirements-docs.txt
 
 
 ------------------------------------------------------------------------------------------
- الخطوة 8: تشغيل التطبيق
+ الخطوة 6: تشغيل التطبيق
 ------------------------------------------------------------------------------------------
  للتجربة بدون الجبيرة (بيانات محاكاة):
 cd SmartSplint_Monitor
@@ -79,7 +65,7 @@ python server.py
 
 
 ------------------------------------------------------------------------------------------
- الخطوة 9 (لرفع الكود على الـ ESP32): تثبيت Arduino IDE
+ الخطوة 7 (لرفع الكود على الـ ESP32): تثبيت Arduino IDE
 ------------------------------------------------------------------------------------------
 winget install --id ArduinoSA.IDE.stable -e
 
@@ -88,16 +74,16 @@ winget install --id ArduinoSA.IDE.stable -e
       https://espressif.github.io/arduino-esp32/package_esp32_index.json
    2) Tools > Board > Boards Manager: ابحث عن esp32 (by Espressif) وثبّت الإصدار 2.0.17
    3) Tools > Manage Libraries: ثبّت OneWire ثم DallasTemperature
-   4) افتح الملف firmware\SmartSplint_Monitor_FW\SmartSplint_Monitor_FW.ino
+   4) افتح الملف firmware\SmartSplint_Monitor_BLEOnly\SmartSplint_Monitor_BLEOnly.ino
    5) الإعدادات:
         Board            : ESP32C3 Dev Module
         USB CDC On Boot  : Enabled
-        Partition Scheme : Huge APP (3MB No OTA)
+        Partition Scheme : Default
    6) اختر الـ Port، ثم اضغط Upload
 
 
 ------------------------------------------------------------------------------------------
- (بديل للخطوة 9) رفع الكود باستخدام سطر الأوامر arduino-cli
+ (بديل للخطوة 7) رفع الكود باستخدام سطر الأوامر arduino-cli
 ------------------------------------------------------------------------------------------
 winget install --id ArduinoSA.CLI -e
  (أغلق PowerShell وافتح نافذة جديدة، ثم ادخل مجلد SmartSplint مرة أخرى)
@@ -108,7 +94,7 @@ arduino-cli core install esp32:esp32@2.0.17
 arduino-cli lib install OneWire DallasTemperature
 arduino-cli board list
  (اكتب رقم الـ Port الظاهر، مثل COM5، بدل COM5 في الأمر التالي)
-arduino-cli compile --upload -p COM5 --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app" firmware\SmartSplint_Monitor_FW
+arduino-cli compile --upload -p COM5 --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc" firmware\SmartSplint_Monitor_BLEOnly
 
 
 ------------------------------------------------------------------------------------------

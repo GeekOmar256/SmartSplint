@@ -4,7 +4,7 @@ This document describes the two programs of the monitoring system:
 
 | Part | Location | Language | Runs on |
 |---|---|---|---|
-| **Firmware** | `firmware/SmartSplint_Monitor_FW/SmartSplint_Monitor_FW.ino` | C++ (Arduino) | ESP32-C3 SuperMini on the splint |
+| **Firmware** | `firmware/SmartSplint_Monitor_BLEOnly/SmartSplint_Monitor_BLEOnly.ino` | C++ (Arduino) | ESP32-C3 SuperMini on the splint |
 | **Computer application** (SmartSplint Monitor) | `SmartSplint_Monitor/` (`server.py` + `static/`) | Python 3 + HTML/CSS/JavaScript | The clinician's computer |
 
 The main design rule is that **the splint only acquires and sends raw data, and the computer does all the processing**:
@@ -45,16 +45,15 @@ flowchart LR
         UI["Dashboard in the browser<br/>http://localhost:8000"]
         APP <--> UI
     end
-    FW -- "Bluetooth LE (default)<br/>binary notifications" --> APP
-    FW -- "Wi-Fi<br/>HTTP + JSON" --> APP
+    FW -- "Bluetooth LE<br/>binary notifications" --> APP
 ```
 
 | Item | Value |
 |---|---|
 | Sampling rate | 50 samples/s (every 20 ms) for both IMUs and both FSRs, 1 sample/s for temperature |
 | Raw sample | `seq, t_ms, forearm ax ay az gx gy gz, hand ax ay az gx gy gz, fsr1, fsr2, flags` |
-| Buffer on the splint | 512 samples (about 10 s), so short link interruptions do not lose data over Wi-Fi |
-| Default link | Bluetooth Low Energy (lowest power). Wi-Fi is selectable |
+| Buffer on the splint | 512 samples (about 10 s) |
+| Data link | Bluetooth Low Energy |
 | Stored on the computer | One row per second (averages, maxima, event count) in SQLite |
 
 ---
@@ -67,9 +66,9 @@ flowchart LR
 |---|---|
 | Board | ESP32C3 Dev Module (ESP32 Arduino core 2.0.17) |
 | USB CDC On Boot | Enabled (needed for the Serial Monitor) |
-| **Partition Scheme** | **Huge APP (3MB No OTA)**. Wi-Fi + BLE together need 1.48 MB, which does not fit the default 1.3 MB partition |
-| Libraries | WiFi, WebServer, ESPmDNS, Wire, Preferences, BLEDevice (all in the core); OneWire, DallasTemperature (installed) |
-| Program size | 1,481,728 bytes (47% of 3 MB); RAM 83 KB (25%) |
+| **Partition Scheme** | Default, checked with ESP32 core 2.0.17 |
+| Libraries | Wire and BLE (bundled); OneWire and DallasTemperature (installed) |
+| Program size | 995,154 bytes (75% of the default partition) in the checked build |
 
 ### 2.2 Wiring
 
@@ -92,46 +91,23 @@ starting. GPIO8 also drives the on-board LED, so the LED is not used.
 | `SAMPLE_MS` | 20 | One sample every 20 ms (50 Hz) |
 | `TEMP_MS` | 1000 | DS18B20 read once per second (12-bit conversion takes up to 750 ms) |
 | `BUFFER_SIZE` | 512 | Ring buffer length (about 10 s) |
-| `MAX_ROWS_PER_REQUEST` | 250 | Maximum samples per Wi-Fi reply |
 | IMU range | ±2 g, ±250 °/s | 16384 LSB/g and 131 LSB/(°/s) |
-| IMU registers | `0x6B=0x01`, `0x6C=0x00`, `0x1A=0x03`, `0x19=4`, `0x1B=0x00`, `0x1C=0x00` | Wake, all axes on, 44 Hz anti-alias filter, 200 Hz internal rate, ranges |
+| IMU registers | `0x6B=0x01`, `0x6C=0x00`, `0x1A=0x03`, `0x19=19`, `0x1B=0x00`, `0x1C=0x00` | Wake, all axes on, 44 Hz anti-alias filter, 50 Hz internal rate, ranges |
 
 ### 2.4 Main functions
 
 | Function | Purpose |
 |---|---|
-| `setup()` | Starts Serial, I2C and ADC, initializes the sensors, reads the saved link mode, starts Wi-Fi and/or BLE |
-| `loop()` | Takes a sample every 20 ms, reads the temperature every second, services Wi-Fi/BLE and Serial commands, retries stopped IMUs every 5 s |
+| `setup()` | Starts Serial, I2C and ADC, initializes the sensors and starts BLE advertising |
+| `loop()` | Takes a sample every 20 ms, reads the temperature every second, services BLE and Serial commands, retries stopped IMUs every 5 s |
 | `initIMU(i)` | Checks the IMU's identity (`WHO_AM_I`), writes the configuration and reads it back to confirm it |
 | `readImuRaw(i)` | Reads 14 bytes from register `0x3B` and returns the 6 raw values (accel X/Y/Z, gyro X/Y/Z) |
 | `takeSample()` | Reads both IMUs and both FSRs and stores one `Sample` in the ring buffer. After 10 failed reads in a row an IMU is marked not ready |
 | `initializeTemperature()` | Finds the DS18B20, sets 12-bit resolution and starts non-blocking conversions |
-| `handleSamples()` | Wi-Fi: `GET /api/samples?after=<seq>` returns the samples newer than `seq` as JSON |
-| `handleStatus()` | Wi-Fi: `GET /api/status` returns device information and the latest sample |
-| `serviceWiFi()` | Starts or stops the web server and mDNS when Wi-Fi connects or drops, and retries every 10 s |
 | `startBLE()` | Creates the BLE server, the data service and its notify characteristic, and starts advertising |
 | `serviceBLE()` | Packs up to 5 new samples into one binary packet and sends it as a notification |
-| `setLinkMode(mode)` | Saves Wi-Fi / BLE / both in flash (Preferences) and restarts the board |
 
-### 2.5 Wi-Fi interface
-
-- Network `project`, password `12345678`, hostname `smartsplint` (`http://smartsplint.local`).
-- `GET /api/samples?after=<seq>` returns:
-
-```json
-{
-  "firmware": "SmartSplint_Monitor_FW 2.0 (raw)", "ip": "192.168.x.x", "rssi": -55, "uptime_ms": 123456,
-  "rate_hz": 50, "accel_lsb_per_g": 16384, "gyro_lsb_per_dps": 131, "adc_bits": 12,
-  "imu_ready": [true, true], "temp_found": true, "temp_c": 33.62,
-  "fields": ["seq","t_ms","f_ax","f_ay","f_az","f_gx","f_gy","f_gz","h_ax","h_ay","h_az","h_gx","h_gy","h_gz","fsr1","fsr2","flags"],
-  "oldest_seq": 1201, "newest_seq": 1712,
-  "rows": [[1690, 33800, 120, -40, 16210, 15, -8, 3, 210, 35, 14900, -11, 6, 2, 1873, 1679, 3], "..."]
-}
-```
-
-`flags`: bit 0 = forearm IMU read OK, bit 1 = hand IMU read OK.
-
-### 2.6 Bluetooth Low Energy interface (default)
+### 2.5 Bluetooth Low Energy interface
 
 | Item | Value |
 |---|---|
@@ -140,6 +116,8 @@ starting. GPIO8 also drives the on-board LED, so the LED is not used.
 | Data characteristic (notify) | `6e7a0002-5a3b-4c8e-9f21-7d4a2c1b0e01` |
 | MTU | 247 requested. The number of samples per packet adapts to the negotiated MTU |
 | Rate | One packet as soon as 5 samples are waiting, or every 100 ms (about 10 packets/s) |
+
+In each sample, flags bit 0 marks a valid forearm IMU reading and bit 1 marks a valid hand IMU reading.
 
 Packet layout (little-endian):
 
@@ -152,17 +130,14 @@ Packet layout (little-endian):
 | 5 | Reserved | uint8 |
 | 6 + 37·n | Sample n: `seq` (uint32), `t_ms` (uint32), 6 × int16 forearm, 6 × int16 hand, `fsr1` (uint16), `fsr2` (uint16), `flags` (uint8) | 37 bytes |
 
-### 2.7 Serial commands (115200 baud)
+### 2.6 Serial commands (115200 baud)
 
 | Command | Action |
 |---|---|
-| `b` | Bluetooth only (**default**, lowest power), saved and restarts |
-| `w` | Wi-Fi only, saved and restarts |
-| `a` | Wi-Fi and Bluetooth, saved and restarts |
 | `r` | Reinitialize all sensors |
 | `s` | Scan the I2C bus (expects 0x68 and 0x69) |
 
-### 2.8 Flowchart
+### 2.7 Flowchart
 
 ![ESP32 firmware: setup](flowcharts/1a_esp32_setup.png)
 
@@ -177,11 +152,11 @@ Packet layout (little-endian):
 | File | Purpose |
 |---|---|
 | `server.py` | The whole back end: data link, processing, calibration, database, analysis and web server |
-| `static/index.html`, `style.css`, `app.js` | Dashboard: 5 tabs, charts drawn on `<canvas>`, no external libraries (works offline) |
+| `static/index.html`, `style.css`, `app.js` | Dashboard: Measurements, Settings and password-protected Calibration |
 | `run.bat` | Starts the app for the real splint and opens the browser |
 | `run_simulation.bat` | Starts the app with simulated raw data and 3 days of demo history |
 | `data/splint.db` | SQLite database (one row per second + notes/markers) |
-| `data/settings.json` | Saved settings (link type, address, analysis limits, baseline) |
+| `data/settings.json` | Saved settings (analysis limits, patient label, baseline) |
 | `data/calibration.json` | **Saved IMU and FSR calibration, reused in every later session** |
 
 Requirements: Python 3.8+ and `pip install bleak` (Bluetooth only). Options:
@@ -190,7 +165,6 @@ Requirements: Python 3.8+ and `pip install bleak` (Bluetooth only). Options:
 |---|---|
 | `--simulate` | Run without hardware (separate `*_simulation` database, settings and calibration) |
 | `--demo-days N` | With `--simulate`: create N days of history once, in an empty database |
-| `--host ADDRESS` | Splint address for Wi-Fi |
 | `--port N` | Dashboard port (default 8000) |
 | `--no-browser` | Do not open the browser |
 
@@ -201,12 +175,12 @@ Requirements: Python 3.8+ and `pip install bleak` (Bluetooth only). Options:
 | `JsonStore`, `Settings` | Load and save `settings.json` and `calibration.json` (atomic write) |
 | `Database` | SQLite access: `samples` table (one row per second) and `markers` table (calibration, baseline, notes) |
 | `Processor` | Turns raw 50 Hz samples into angles, events and per-second rows. It also runs the calibration captures |
-| `fsr_force()` | Converts an FSR reading to newtons with the saved calibration points |
-| `parse_ble_packet()` | Decodes one BLE notification into the same row format as Wi-Fi |
-| `DeviceLink` (thread) | Gets data from the splint every 0.5 s by Bluetooth, Wi-Fi or simulation, and passes it to `Processor` |
+| `fsr_force()` / `fsr_pressure()` | Convert an FSR reading to force (N) with the saved calibration points, then to pressure (kPa) by dividing by the FSR 400 active area (Ø 5.08 mm = 20.3 mm²) |
+| `parse_ble_packet()` | Decodes one BLE notification into raw sensor samples |
+| `DeviceLink` (thread) | Gets data from the splint every 0.5 s by Bluetooth or simulation, and passes it to `Processor` |
 | `Simulator` | Generates realistic raw samples (arm motion, wrist movements, gyro offsets, FSR loads, temperature) |
 | `analyze()` | The analysis: pressure, temperature, movement, compliance, loose splint, movement–pressure link, data quality |
-| `downsample()` | Reduces the selected period to at most 600 points for the charts |
+| `downsample()` | Reduces the selected period to at most 600 points for the history API |
 | `Handler`, `App` | HTTP server: dashboard files and the JSON API |
 | `create_demo_history()` | Simulated history and a demo calibration for testing the analysis |
 
@@ -214,8 +188,7 @@ Requirements: Python 3.8+ and `pip install bleak` (Bluetooth only). Options:
 
 | Link | How it works |
 |---|---|
-| **Bluetooth (default)** | `bleak` finds the device named `SmartSplint` (8 s scan), connects and subscribes to the data characteristic. Packets are decoded and processed every 0.5 s. If no data arrives for 5 s, or the connection drops, it reconnects automatically |
-| **Wi-Fi** | Every 0.5 s: `GET /api/samples?after=<last seq>`. Up to 4 requests in a row to catch up after a pause. The address `smartsplint.local` is resolved once and cached for 5 min |
+| **Bluetooth** | `bleak` finds the device named `SmartSplint` (8 s scan), connects and subscribes to the data characteristic. Packets are decoded and processed every 0.5 s. If no data arrives for 5 s, or the connection drops, it reconnects automatically |
 | **Simulation** | `Simulator.batch()` produces the samples for the elapsed time |
 
 Missed samples are detected from gaps in `seq`. A sequence number that goes backwards means the splint restarted,
@@ -231,8 +204,8 @@ and the filters are reset.
 | Wrist movement | Δθ = (θhand − θforearm) − θ0, where θ0 is the fitted angle saved at calibration. Whole-arm movement cancels out |
 | Sideways movement | ωrel = ωz,hand − ωz,forearm, integrated over time. Reset to 0 after 1 s with \|ωrel\| < 3 °/s |
 | Movement event | Starts when \|Δθ\| > 5° or \|sideways\| > 8°. Ends after 0.5 s with both below 60% of their limits |
-| FSR force | Piecewise-linear interpolation between the calibration points (zero → 0 N), extrapolated above the last point |
-| Storage | Each second: mean FSR readings and forces, temperature, mean angles, maximum \|Δθ\| and \|ωrel\|, event count, IMU availability, samples received and missed |
+| FSR pressure | Piecewise-linear interpolation between the calibration points (zero → 0 N), extrapolated above the last point, then divided by the sensor area to give kPa (1 N ≈ 49.3 kPa) |
+| Storage | Each second: mean FSR readings and pressures, temperature, mean angles, maximum \|Δθ\| and \|ωrel\|, event count, IMU availability, samples received and missed |
 
 ![Processing step 1](flowcharts/3a_processing_convert_filter.png)
 
@@ -265,7 +238,7 @@ Default limits can be changed in **Settings**. They were set by the project team
 | Analysis | Rule (default values) |
 |---|---|
 | Baseline | 10 min, starting at the time set with "Start new baseline", otherwise at the start of the selected period |
-| Pressure | Median of the last 30 min vs the baseline median. **Alert** if the rise is ≥ 20% **and** ≥ 0.3 N (or ≥ 100 ADC if not calibrated). Uses newtons when ≥ 50% of the rows are calibrated |
+| Pressure | Median of the last 30 min vs the baseline median. **Alert** if the rise is ≥ 20% **and** ≥ 15 kPa (or ≥ 100 ADC if not calibrated). Uses kPa when ≥ 50% of the rows are calibrated |
 | Temperature | Same method. **Alert** if the rise is ≥ 1.0 °C |
 | Trends | Least-squares slope per hour (pressure and temperature) |
 | Movement | Number of events, events per hour, largest movement. **Alert** if > 6 events per hour |
@@ -281,11 +254,12 @@ Pressure and temperature alerts need at least baseline + 30 min of data in the s
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/` | Dashboard |
-| GET | `/api/state` | Connection, live values, settings, calibration, capture progress (polled every 1 s) |
-| GET | `/api/history?hours=H` | Chart data for the last H hours (0 = all) |
+| GET | `/api/state` | Connection, live values and settings. Calibration data requires the session token (polled every 1 s) |
+| GET | `/api/history?hours=H` | Downsampled readings for the last H hours (0 = all) |
 | GET | `/api/analysis?hours=H` | Analysis results and alerts (polled every 10 s) |
 | GET | `/api/export.csv?hours=H` | CSV export of the stored rows |
-| POST | `/api/settings` | Save settings (link type, address, limits, patient label) |
+| POST | `/api/settings` | Save analysis limits and session settings |
+| POST | `/api/calibration/unlock` | Verify the professional password and return a token for calibration requests |
 | POST | `/api/calibration/start` | `{"kind": "imu" \| "fsr_zero" \| "fsr_point", "fsr": 1\|2, "force_n": N}` |
 | GET | `/api/calibration/status` | Capture progress and result |
 | POST | `/api/calibration/clear` | `{"part": "imu" \| "fsr1" \| "fsr2"}` |
@@ -299,7 +273,7 @@ Pressure and temperature alerts need at least baseline + 30 min of data in the s
 |---|---|---|
 | `ts` | Time (Unix seconds) | s |
 | `fsr1_raw`, `fsr2_raw` | Mean FSR reading | ADC (0–4095) |
-| `fsr1_n`, `fsr2_n` | Mean force (if calibrated) | N |
+| `fsr1_kpa`, `fsr2_kpa` | Mean contact pressure (if calibrated). Older databases are converted from `fsr1_n`/`fsr2_n` on start | kPa |
 | `temp_c` | Skin temperature | °C |
 | `theta_f`, `theta_h` | Mean filtered forearm and hand angles | ° |
 | `wrist_delta` | Mean wrist movement from the fitted position | ° |
@@ -309,7 +283,7 @@ Pressure and temperature alerts need at least baseline + 30 min of data in the s
 | `events_total` | Cumulative movement events in this session | count |
 | `in_event` | Movement in progress | 0/1 |
 | `imu_f_ok`, `imu_h_ok` | Fraction of samples with the IMU working | 0–1 |
-| `rssi` | Wi-Fi signal (Wi-Fi only) | dBm |
+| `rssi` | Legacy Wi-Fi signal column | dBm |
 | `calibrated` | Wrist movement available (IMU calibrated) | 0/1 |
 | `n_samples`, `n_missed` | Samples received and missed in the second | count |
 
@@ -317,11 +291,12 @@ Pressure and temperature alerts need at least baseline + 30 min of data in the s
 
 | Tab | Content |
 |---|---|
-| Overview | Overall status, live cards (2 pressures, temperature, wrist movement with gauge, sideways movement, compliance), alerts, notes |
-| Charts | Pressure, temperature (with alert level), wrist movement (with limit), movement events. Tooltips on hover |
-| Analysis | One card per analysis and the list of findings |
-| Calibration | IMU wizard, FSR 1 and FSR 2 wizards (zero + weights in grams, points table), live raw readings |
-| Settings | Link type (Bluetooth / Wi-Fi), addresses, patient label, baseline, CSV export, analysis limits |
+| Measurements | Default page with live sensor readings, connection, alerts (from the analysis) and notes. Shows raw readings for uncalibrated sensors |
+| Calibration | Open from Settings and unlock with the professional password. Includes IMU and FSR calibration procedures |
+| Settings (gear) | Professional calibration entry, patient label, baseline, CSV export and alert limits |
+
+The separate Analysis page was removed (2026-11-13). The analysis still runs on the computer and supplies the alerts,
+the status banner and the compliance card on Measurements.
 
 ![Application: startup and dashboard](flowcharts/2a_app_startup_dashboard.png)
 
@@ -333,13 +308,13 @@ Pressure and temperature alerts need at least baseline + 30 min of data in the s
 
 | Test | Result |
 |---|---|
-| Firmware compile (`esp32:esp32:esp32c3`, Huge APP) | Success, no warnings, 47% flash |
+| BLE-only firmware compile (`esp32:esp32:esp32c3`, default partition) | Success, 75% flash in the checked build |
 | BLE packet encode → decode | The 191-byte, 5-sample packet decoded exactly |
 | FSR conversion | Correct interpolation and extrapolation |
 | Whole-arm motion (simulation) | Arm moving ±30°, wrist movement stayed ≈ 0° |
 | IMU calibration (simulation) | Recovered the simulated gyro offsets (1.615 vs 1.6 °/s) and the 25.0° reference |
 | Analysis (3 days of simulated data) | Rising movement rate detected as a loose splint. Analysis time 0.45 s |
-| Dashboard | All 5 tabs checked in light and dark mode |
+| Dashboard | Default page, calibration access and uncalibrated readings checked in browser simulation |
 
 **Not yet tested:** the new firmware on the real splint, and the Bluetooth link with real hardware.
 
@@ -352,13 +327,13 @@ Pressure and temperature alerts need at least baseline + 30 min of data in the s
 | `SmartSplint_IMUOnly` | Reading both MPU6050s (0x68 and 0x69) |
 | `SmartSplint_AllSensors` | All sensors, Serial output only |
 | `SmartSplint_AllSensors_WiFi` | All sensors with an on-board web dashboard (values processed on the ESP32) |
-| **`SmartSplint_Monitor_FW`** | **Current version: raw data only, Bluetooth (default) + Wi-Fi, for the computer application** |
+| `SmartSplint_Monitor_FW` | Earlier dual-transport build |
+| **`SmartSplint_Monitor_BLEOnly`** | **Current raw-data BLE firmware for the computer application** |
 
 ## 6. Known limitations
 
 - The MPU6050 has no magnetometer. Sideways (radial/ulnar) movement is therefore measured as short movements, not as
   an absolute angle over long periods.
-- After a Bluetooth reconnection, samples sent during the dropout are not resent. Over Wi-Fi, up to 10 s are
-  recovered from the buffer.
+- The application reports gaps in sample sequence numbers across Bluetooth interruptions.
 - The sign of the wrist angle depends on how the IMU boxes are mounted. Confirm it with a goniometer (test T3).
-- The analysis limits are not clinically validated, and the power use of Wi-Fi vs Bluetooth still has to be measured.
+- The analysis limits are not clinically validated, and battery runtime still has to be measured.

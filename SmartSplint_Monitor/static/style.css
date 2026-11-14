@@ -98,7 +98,12 @@ main { max-width: 1280px; margin: 0 auto; padding: 0 24px 40px; }
 .hero-detail { color: var(--muted); margin-top: 4px; }
 
 /* ---------------------------------------------------------------- cards */
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; margin-bottom: 18px; }
+[hidden] { display: none !important; }
+/* measurement cards: 3 x 2 grid (pressure and temperature on top, movement below) */
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 18px; }
+@media (max-width: 900px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .cards { grid-template-columns: 1fr; } }
+.alerts-panel { margin-bottom: 18px; }
 .card {
   background: var(--panel); border-radius: 18px; padding: 16px 18px; box-shadow: var(--shadow);
   border-top: 6px solid var(--accent, var(--primary)); position: relative; overflow: hidden;
@@ -166,14 +171,6 @@ input, select.field {
   border: 2px solid var(--line); background: var(--bg); color: var(--text); outline: none;
 }
 input:focus { border-color: var(--primary); }
-.note-row { display: flex; gap: 8px; }
-.note-row input { margin: 0; }
-.notes { margin-top: 12px; max-height: 260px; overflow: auto; }
-.note { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: .9rem; }
-.note .when { color: var(--muted); font-size: .8rem; }
-.note.kind-calibration::before { content: "🎯 "; }
-.note.kind-baseline::before { content: "⏱ "; }
-.note.kind-note::before { content: "📝 "; }
 
 .seg { display: inline-flex; background: var(--bg); border-radius: 12px; padding: 4px; gap: 4px; }
 .seg button { border: 0; background: transparent; padding: 9px 16px; border-radius: 9px; font-weight: 700;
@@ -199,13 +196,6 @@ input:focus { border-color: var(--primary); }
 .raw-grid div { background: var(--bg); padding: 10px 12px; border-radius: 10px; }
 .raw-grid b { display: block; font-size: 1.1rem; margin-top: 2px; }
 
-.analysis-cards .card .row { display: flex; justify-content: space-between; gap: 8px; font-size: .9rem;
-  padding: 5px 0; border-bottom: 1px dashed var(--line); }
-.analysis-cards .card .row span:last-child { font-weight: 700; }
-.badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .78rem; font-weight: 700; margin-top: 8px; }
-.badge.ok { background: var(--ok-bg); color: var(--ok); }
-.badge.warning { background: var(--warn-bg); color: var(--warn); }
-.badge.info { background: var(--info-bg); color: var(--info); }
 
 /* ---------------------------------------------------------------- toast / tooltip */
 .toast {
@@ -223,3 +213,10 @@ input:focus { border-color: var(--primary); }
   main, .tabs { padding-left: 16px; padding-right: 16px; }
   .big { font-size: 1.6rem; }
 }
+
+.tabs .settings-gear { margin-inline-start: auto; font-size: 1.35rem; min-width: 44px; min-height: 44px; }
+#calibrationDialog { width: min(390px, calc(100% - 32px)); border: 1px solid #dce0ea; border-radius: 14px; padding: 24px; color: #17233a; }
+#calibrationDialog::backdrop { background: rgba(16, 23, 39, .55); }
+#calibrationDialog h2 { margin-top: 0; }
+#calibrationDialog input { width: 100%; }
+#calibrationError { color: #a32538; }

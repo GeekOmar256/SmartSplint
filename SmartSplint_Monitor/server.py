@@ -7,8 +7,7 @@ movement events, storage, analysis and the dashboard (http://localhost:8000).
 
 Only the Python standard library is used (Python 3.8 or newer), so nothing has to be installed.
 
-    python server.py                    connect to the splint (default smartsplint.local)
-    python server.py --host 192.168.1.50
+    python server.py                    connect to the splint over Bluetooth
     python server.py --simulate         run without hardware, using simulated raw data
     python server.py --simulate --demo-days 3   also create 3 days of simulated history
 """
@@ -17,16 +16,16 @@ import asyncio
 import csv
 import importlib.util
 import io
+import hmac
+import secrets
 import json
 import math
 import random
-import socket
 import sqlite3
 import struct
 import threading
 import time
 import urllib.parse
-import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -35,6 +34,8 @@ APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 DATA_DIR = APP_DIR / "data"
 G = 9.80665
+# FSR 400 active area: 5.08 mm diameter circle. Pressure = force / area, reported in kPa (1 kPa = 1000 Pa).
+FSR_AREA_M2 = math.pi * (5.08e-3 / 2) ** 2
 
 DEFAULT_SETTINGS = {
     "transport": "ble",             # "ble" (default) or "wifi"
@@ -45,7 +46,7 @@ DEFAULT_SETTINGS = {
     "baseline_ts": None,
     "baseline_minutes": 10,
     "pressure_rise_pct": 20.0,      # sustained pressure rise that raises a flag
-    "pressure_rise_min_n": 0.3,     # ...and at least this much force (calibrated FSR)
+    "pressure_rise_min_kpa": 15.0,  # ...and at least this much pressure in kPa (calibrated FSR)
     "pressure_rise_min_raw": 100,   # ...or this many ADC counts (uncalibrated FSR)
     "temp_rise_c": 1.0,
     "sustain_minutes": 30,
@@ -57,7 +58,7 @@ DEFAULT_SETTINGS = {
     "filter_alpha": 0.98,
 }
 
-FIELDS = ["ts", "fsr1_raw", "fsr2_raw", "fsr1_n", "fsr2_n", "temp_c", "theta_f", "theta_h", "wrist_delta",
+FIELDS = ["ts", "fsr1_raw", "fsr2_raw", "fsr1_kpa", "fsr2_kpa", "temp_c", "theta_f", "theta_h", "wrist_delta",
           "deviation", "omega_rel", "win_max_delta", "win_max_omega", "events_total", "in_event",
           "imu_f_ok", "imu_h_ok", "rssi", "calibrated", "n_samples", "n_missed"]
 
@@ -148,6 +149,12 @@ def fsr_force(raw, cal):
     return max(0.0, f1 + (f1 - f0) * (raw - r1) / (r1 - r0))
 
 
+def fsr_pressure(raw, cal):
+    """Convert an FSR ADC reading to contact pressure in kPa: calibrated force divided by the sensor area."""
+    f = fsr_force(raw, cal)
+    return None if f is None else f / FSR_AREA_M2 / 1000.0
+
+
 # ====================================================================== database
 class Database:
     def __init__(self, path):
@@ -157,6 +164,14 @@ class Database:
         with self.lock:
             self.conn.execute(f"CREATE TABLE IF NOT EXISTS samples (ts REAL PRIMARY KEY, {columns})")
             self.conn.execute("CREATE TABLE IF NOT EXISTS markers (ts REAL, kind TEXT, text TEXT)")
+            # older databases stored force in N (fsr1_n, fsr2_n): add the kPa columns and convert once
+            have = {r[1] for r in self.conn.execute("PRAGMA table_info(samples)")}
+            for k in (1, 2):
+                if f"fsr{k}_kpa" not in have:
+                    self.conn.execute(f"ALTER TABLE samples ADD COLUMN fsr{k}_kpa REAL")
+                    if f"fsr{k}_n" in have:
+                        self.conn.execute(f"UPDATE samples SET fsr{k}_kpa = fsr{k}_n / ? / 1000.0",
+                                          (FSR_AREA_M2,))
             self.conn.commit()
 
     def insert_many(self, rows):
@@ -306,7 +321,8 @@ class Processor:
             points.append(new)
             entry["points"] = sorted(points, key=lambda p: p["raw"])
             entry["time"] = now
-            msg = f"FSR {k + 1}: {c['force_n']:.2f} N point saved (reading {mean:.0f})."
+            kpa = c["force_n"] / FSR_AREA_M2 / 1000.0
+            msg = f"FSR {k + 1}: {c['force_n'] / G * 1000:.0f} g ({kpa:.1f} kPa) point saved (reading {mean:.0f})."
         if std > 60:
             msg += " The reading was unsteady; consider repeating it."
         cal_list[k] = entry
@@ -417,10 +433,11 @@ class Processor:
                 b["omega"] = omega
                 # live values for the dashboard
                 self.live = {"ts": wall, "fsr_raw": fsr,
-                             "fsr_n": [fsr_force(fsr[k], fsr_cal[k]) for k in range(2)],
+                             "fsr_kpa": [fsr_pressure(fsr[k], fsr_cal[k]) for k in range(2)],
                              "theta_f": self.pitch[0], "theta_h": self.pitch[1], "wrist_delta": delta,
                              "deviation": self.deviation, "omega_rel": omega, "in_event": self.in_event,
                              "events_session": self.events_total, "imu_ok": [f_ok, h_ok],
+                             "imu_raw": [r[2:8] if f_ok else None, r[8:14] if h_ok else None],
                              "temp_c": header.get("temp_c"), "calibrated": reference is not None}
         return finished
 
@@ -430,7 +447,7 @@ class Processor:
         fsr_raw = [b["fsr"][k] / n for k in range(2)]
         mean = lambda v: sum(v) / len(v) if v else None
         return {"ts": float(b["second"]), "fsr1_raw": round(fsr_raw[0], 1), "fsr2_raw": round(fsr_raw[1], 1),
-                "fsr1_n": fsr_force(fsr_raw[0], fsr_cal[0]), "fsr2_n": fsr_force(fsr_raw[1], fsr_cal[1]),
+                "fsr1_kpa": fsr_pressure(fsr_raw[0], fsr_cal[0]), "fsr2_kpa": fsr_pressure(fsr_raw[1], fsr_cal[1]),
                 "temp_c": header.get("temp_c"), "theta_f": mean(b["pf"]), "theta_h": mean(b["ph"]),
                 "wrist_delta": mean(b["delta"]), "deviation": b.get("deviation"), "omega_rel": b.get("omega"),
                 "win_max_delta": b["max_delta"] if b["has_delta"] else None,
@@ -572,21 +589,6 @@ class DeviceLink(threading.Thread):
         self.lock = threading.Lock()
         self.state = {"connected": False, "last_ok": None, "error": "Not connected yet", "device": None,
                       "resolved_ip": None, "rows_received": 0, "rows_missed": 0}
-        self._ip_cache = (None, None, 0.0)
-        self.after = 0
-
-    def _resolve(self, host):
-        cached_host, cached_ip, when = self._ip_cache
-        if cached_host == host and cached_ip and time.time() - when < 300:
-            return cached_ip
-        ip = socket.getaddrinfo(host, 80, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
-        self._ip_cache = (host, ip, time.time())
-        return ip
-
-    def _get(self, path, timeout=4.0):
-        ip = self._resolve(self.settings.get("device_host"))
-        with urllib.request.urlopen(f"http://{ip}{path}", timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
 
     def _store(self, batches, started):
         stored = []
@@ -632,7 +634,7 @@ class DeviceLink(threading.Thread):
             await client.start_notify(BLE_DATA_UUID, on_data)
             self._fail("Bluetooth connected, waiting for data...")
             silent = 0.0
-            while client.is_connected and self.settings.get("transport") == "ble":
+            while client.is_connected:
                 await asyncio.sleep(0.5)
                 if queue:
                     batch, queue[:] = list(queue), []
@@ -648,7 +650,7 @@ class DeviceLink(threading.Thread):
     # ---------------------------------------------------------------- main loop
     def run(self):
         while True:
-            if not self.simulate and self.settings.get("transport") == "ble":
+            if not self.simulate:
                 try:
                     self._run_ble()
                 except Exception as exc:
@@ -660,28 +662,7 @@ class DeviceLink(threading.Thread):
                 continue
             started = time.time()
             try:
-                batches = []
-                if self.simulate:
-                    batches.append(self.sim.batch(started))
-                else:
-                    for _ in range(4):   # catch up after a pause (max 250 rows per request)
-                        data = self._get(f"/api/samples?after={self.after}")
-                        if data.get("newest_seq", 0) < self.after:   # device restarted
-                            self.after = 0
-                            continue
-                        batches.append((data, data.get("rows", [])))
-                        if data.get("rows"):
-                            self.after = data["rows"][-1][0]
-                        if len(data.get("rows", [])) < 250:
-                            break
-                self._store(batches, started)
-                with self.lock:
-                    self.state["resolved_ip"] = None if self.simulate else self._ip_cache[1]
-            except (OSError, ValueError) as exc:   # network errors, timeouts, bad replies
-                self._ip_cache = (None, None, 0.0)
-                host = self.settings.get("device_host")
-                self._fail(f"Cannot reach the splint at {host} over Wi-Fi ({type(exc).__name__}). "
-                           "Check that the computer is on the same network.")
+                self._store([self.sim.batch(started)], started)
             except Exception as exc:              # anything else: show the real error
                 self._fail(f"Processing error: {type(exc).__name__}: {exc}")
             interval = max(0.2, float(self.settings.get("poll_interval_s") or 0.5))
@@ -741,11 +722,11 @@ def count_events(rows):
 
 
 def fsr_unit(rows):
-    """Use Newtons when most rows have calibrated force, otherwise raw ADC counts."""
+    """Use kPa when most rows have calibrated pressure, otherwise raw ADC counts."""
     use = {}
     for k in (1, 2):
-        n_cal = sum(1 for r in rows if r[f"fsr{k}_n"] is not None)
-        use[k] = ("n", f"fsr{k}_n", "N") if rows and n_cal >= 0.5 * len(rows) else ("raw", f"fsr{k}_raw", "ADC")
+        n_cal = sum(1 for r in rows if r[f"fsr{k}_kpa"] is not None)
+        use[k] = ("kpa", f"fsr{k}_kpa", "kPa") if rows and n_cal >= 0.5 * len(rows) else ("raw", f"fsr{k}_raw", "raw")
     return use
 
 
@@ -791,7 +772,7 @@ def analyze(rows, s, start, end, markers):
         sl = slope(ts, [r[key] for r in rows])
         info = {"sensor": name, "unit": unit, "baseline": b, "recent": c, "max": max(vals) if vals else None,
                 "slope_per_h": sl * 3600 if sl is not None else None, "flag": False}
-        min_abs = float(s["pressure_rise_min_n"] if kind == "n" else s["pressure_rise_min_raw"])
+        min_abs = float(s["pressure_rise_min_kpa"] if kind == "kpa" else s["pressure_rise_min_raw"])
         if b is not None and c is not None:
             info["change"] = c - b
             info["change_pct"] = (c - b) / b * 100 if b > 0 else None
@@ -803,7 +784,7 @@ def analyze(rows, s, start, end, markers):
                                          f"{s['sustain_minutes']} min ({b:.2f} → {c:.2f} {unit}). This may indicate "
                                          "swelling. Please check the limb."})
         if kind == "raw":
-            info["note"] = "Not calibrated: values are raw ADC readings"
+            info["note"] = "Uncalibrated sensor readings"
         pressure.append(info)
     out["pressure"] = pressure
 
@@ -895,7 +876,7 @@ def analyze(rows, s, start, end, markers):
             if v is not None and len(h) >= 5:
                 ref = sum(h) / len(h)
                 total += v - ref
-                if ref > 0 and v > ref * 1.15 and v - ref > (0.1 if k.endswith("_n") else 40):
+                if ref > 0 and v > ref * 1.15 and v - ref > (5.0 if k.endswith("_kpa") else 40):
                     spike = True
             if v is not None:
                 h.append(v)
@@ -921,7 +902,7 @@ def analyze(rows, s, start, end, markers):
     if coverage < 80 and span > 600:
         alerts.append({"level": "info", "title": "Gaps in the recording",
                        "detail": f"Data was received for {coverage:.0f}% of the period ({gaps} gaps). The splint may "
-                                 "have been out of Wi-Fi range or switched off."})
+                                 "have been out of Bluetooth range or switched off."})
     if not enough_time:
         alerts.append({"level": "info", "title": "Collecting data for trend analysis",
                        "detail": f"Pressure and temperature trends need at least "
@@ -977,6 +958,7 @@ class App:
         self.db, self.settings, self.cal = db, settings, calibration
         self.processor, self.link, self.simulate = processor, link, simulate
         self._cache = None
+        self.calibration_token = secrets.token_urlsafe(32)
 
     def window(self, query):
         hours = float(query.get("hours", ["24"])[0])
@@ -1021,6 +1003,10 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
 
+    def _calibration_unlocked(self):
+        supplied = self.headers.get("X-Calibration-Token", "")
+        return hmac.compare_digest(supplied.encode(), self.app.calibration_token.encode())
+
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(url.query)
@@ -1033,15 +1019,16 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/state":
                 st = app.link.snapshot()
                 n, first, last = app.db.count()
-                cal = app.cal.all()
+                unlocked = self._calibration_unlocked()
                 return self._send(200, {
                     "simulate": app.simulate, "now": time.time(), "settings": app.settings.all(),
                     "ble_available": ble_available(),
                     "connected": st["connected"], "last_ok": st["last_ok"], "error": st["error"],
                     "device": st["device"], "resolved_ip": st["resolved_ip"],
                     "rows_received": st["rows_received"], "rows_missed": st["rows_missed"],
-                    "live": app.processor.snapshot(), "calibration": cal,
-                    "capture": app.processor.capture_status(),
+                    "live": app.processor.snapshot(), "calibration_unlocked": unlocked,
+                    "calibration": app.cal.all() if unlocked else None,
+                    "capture": app.processor.capture_status() if unlocked else None,
                     "stored_seconds": n, "first_ts": first, "last_ts": last})
             if url.path == "/api/history":
                 start, end = app.window(q)
@@ -1051,6 +1038,8 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/analysis":
                 return self._send(200, app.analysis(q))
             if url.path == "/api/calibration/status":
+                if not self._calibration_unlocked():
+                    return self._send(401, {"error": "Calibration is locked"})
                 return self._send(200, app.processor.capture_status())
             if url.path == "/api/export.csv":
                 start, end = app.window(q)
@@ -1071,7 +1060,16 @@ class Handler(BaseHTTPRequestHandler):
         app = self.app
         try:
             body = self._body()
+            if url.path == "/api/calibration/unlock":
+                password = body.get("password")
+                if not isinstance(password, str) or not hmac.compare_digest(password.encode(), b"1234"):
+                    return self._send(401, {"error": "Incorrect calibration password"})
+                return self._send(200, {"token": app.calibration_token})
+            if url.path.startswith("/api/calibration/") and not self._calibration_unlocked():
+                return self._send(401, {"error": "Calibration is locked"})
             if url.path == "/api/settings":
+                if "transport" in body and body["transport"] != "ble":
+                    return self._send(400, {"error": "The splint uses Bluetooth only"})
                 app._cache = None
                 return self._send(200, app.settings.update(body))
             if url.path == "/api/calibration/start":
@@ -1172,7 +1170,7 @@ def create_demo_history(db, calibration, days):
         raws = [sim_fsr_raw(f) + rng.gauss(0, 4) for f in forces]
         delta = rng.uniform(7, 16) * rng.choice([-1, 1]) if moving else rng.gauss(0, 0.5)
         rows.append({"ts": t, "fsr1_raw": raws[0], "fsr2_raw": raws[1],
-                     "fsr1_n": fsr_force(raws[0], cal[0]), "fsr2_n": fsr_force(raws[1], cal[1]),
+                     "fsr1_kpa": fsr_pressure(raws[0], cal[0]), "fsr2_kpa": fsr_pressure(raws[1], cal[1]),
                      "temp_c": round(temp + rng.gauss(0, 0.05), 2), "theta_f": rng.uniform(-20, 30),
                      "theta_h": None, "wrist_delta": delta, "deviation": rng.uniform(-8, 8) if moving else 0.0,
                      "omega_rel": rng.uniform(20, 70) if moving else abs(rng.gauss(0, 1)),
@@ -1190,7 +1188,6 @@ def create_demo_history(db, calibration, days):
 # ====================================================================== main
 def main():
     parser = argparse.ArgumentParser(description="SmartSplint Monitor")
-    parser.add_argument("--host", help="splint address, e.g. smartsplint.local or 192.168.1.50")
     parser.add_argument("--port", type=int, default=8000, help="dashboard port (default 8000)")
     parser.add_argument("--simulate", action="store_true", help="run without hardware using simulated raw data")
     parser.add_argument("--demo-days", type=float, default=0, help="with --simulate: create N days of history")
@@ -1204,8 +1201,8 @@ def main():
     db = Database(data_dir / f"splint{suffix}.db")
     settings = Settings(data_dir / f"settings{suffix}.json", DEFAULT_SETTINGS)
     calibration = JsonStore(data_dir / f"calibration{suffix}.json", EMPTY_CALIBRATION)
-    if args.host:
-        settings.update({"device_host": args.host})
+    if settings.get("transport") != "ble":
+        settings.update({"transport": "ble"})
     if args.simulate and args.demo_days > 0 and db.count()[0] == 0:   # only once, into an empty database
         print(f"Creating {args.demo_days:g} days of simulated history...")
         create_demo_history(db, calibration, args.demo_days)
@@ -1216,7 +1213,7 @@ def main():
     Handler.app = App(db, settings, calibration, processor, link, args.simulate)
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://localhost:{args.port}"
-    mode = "SIMULATION MODE (no hardware)" if args.simulate else f"splint at {settings.get('device_host')}"
+    mode = "SIMULATION MODE (no hardware)" if args.simulate else f"Bluetooth: {settings.get('ble_name')}"
     print(f"SmartSplint Monitor - {mode}")
     print(f"Dashboard: {url}    (press Ctrl+C to stop)")
     print(f"Data folder: {data_dir}")
